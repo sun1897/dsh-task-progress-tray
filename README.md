@@ -43,6 +43,22 @@ DSH 浏览器端是 cordis 插件体系，纯 UI 插件由三部分组成：`pac
 
 花费按 `references/deepseek-pricing.md` 中的 DeepSeek 官方价目计算，区分缓存命中/未命中、高峰/空闲（峰谷定价），并在价目生效日自动切换。
 
+### 适用范围：仅 DeepSeek 自家模型
+
+「花费金额」这一项**只能用于 DeepSeek 自己的模型**，原因很直接：
+
+- 价格表 `MODEL_PRICES` 里**只内置了 DeepSeek 的价目**（`deepseek-v4-pro`、`deepseek-v4-flash`），因为只有 DeepSeek 官方公开了可查的定价。
+- 判断逻辑是「provider 是否属于 DeepSeek」——只有 provider 名含 `deepseek` 时才去查价并算钱。
+
+因此：
+
+| 场景 | 表现 |
+|---|---|
+| 当前模型是 DeepSeek（v4-pro / v4-flash） | 显示「本会话已花费 ≈ ¥xx」 |
+| 当前模型是其他提供商（OpenAI / Claude / 通义等） | **只显示模型名，不显示花费** |
+
+如果你想让其他模型也算花费，需要在 `assets/tray-plugin/lib/client.js` 的 `MODEL_PRICES` 里补一份对应价目（同样区分缓存命中/未命中、高峰/空闲）。任务进度、Token 用量这两项与模型无关，对所有模型都正常显示。
+
 ## License
 
 MIT
