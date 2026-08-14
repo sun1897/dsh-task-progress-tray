@@ -1,0 +1,48 @@
+# dsh-task-progress-tray
+
+一个为 [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness) Web GUI 打造的**右下角实时任务进度托盘** Agent Skill。
+
+## 它能做什么
+
+把这个技能装进你的 agent 后，一句话（"右下角显示任务进度 / token 用量 / 模型花费"）就能生成一个右下角悬浮托盘插件，实时显示当前会话的：
+
+- **任务进度** —— todo 列表逐条列出（完成 / 进行中 / 待办 + 进度条）
+- **后台任务** —— 运行中的 job（类型、说明、实时耗时）
+- **目标（Goal）** —— 阶段、目标内容、轮次
+- **Token 用量** —— 上下文占用率、累计输入/输出、系统/工具/消息构成
+- **已花费金额** —— 按 DeepSeek 官方峰谷定价 + 分桶计价自动计算
+
+## 目录结构
+
+```
+dsh-task-progress-tray/
+├── SKILL.md                        # 技能主文档（方法论 + 安装 + 验证 + 常见坑）
+├── assets/
+│   └── tray-plugin/                # 已验证的完整插件模板
+│       ├── package.json
+│       └── lib/
+│           ├── index.js            # 宿主端（空 apply）
+│           └── client.js           # 浏览器端 bundle（UI + 数据订阅 + 计价）
+└── references/
+    ├── api-reference.md            # Slot / Projection / Session 精确 API
+    └── deepseek-pricing.md         # DeepSeek V4 官方价目 + 峰谷规则 + 分桶计价
+```
+
+## 安装技能
+
+1. 把这个目录（或打包后的 `.skill` 文件）放到你的 skill 目录（如 `~/.agents/skills/`）
+2. 之后对 agent 说「右下角显示任务进度 / token 用量 / 模型花费」即可触发
+
+## 插件工作原理简述
+
+DSH 浏览器端是 cordis 插件体系，纯 UI 插件由三部分组成：`package.json` 里的 `dsh.client` 声明 + 空宿主 `apply` + 通过 `window.__ModuleLoader__.load` 注册的浏览器 bundle。UI 挂载在全局 `shell.overlay` 槽（右下角浮层），数据来自 `useSessions` 与 `projectionValues`（todos / goal / tokenUsage / contextPressure），模型选择走 `ctx.connection.api.sessions.models`。
+
+详情见 `SKILL.md` 与 `references/`。
+
+## 价格说明
+
+花费按 `references/deepseek-pricing.md` 中的 DeepSeek 官方价目计算，区分缓存命中/未命中、高峰/空闲（峰谷定价），并在价目生效日自动切换。
+
+## License
+
+MIT

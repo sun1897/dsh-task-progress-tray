@@ -1,0 +1,24 @@
+{
+  "name": "dsh-task-progress-tray",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Bottom-right live task-progress tray: todo list, background jobs, goal phase, and token usage for the current session",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": []
+    }
+  },
+  "license": "MIT"
+}
