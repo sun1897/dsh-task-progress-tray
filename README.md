@@ -18,11 +18,13 @@
 
 **折叠态 —— 右下角悬浮胶囊**
 
-![托盘折叠胶囊](docs/images/tray-collapsed.png)
+<img width="281" height="87" alt="image" src="https://github.com/user-attachments/assets/4c236c5f-242e-4959-8206-139dd470f333" />
+
 
 **展开态 —— 完整面板（任务进度 + 模型花费 + Token 用量）**
 
-![托盘展开面板](docs/images/tray-expanded.png)
+<img width="485" height="539" alt="5535670356beb8efd88e53cd612ab283" src="https://github.com/user-attachments/assets/36ac9250-e4fe-44e5-9bb9-c413b5c850d2" />
+
 
 ## 目录结构
 
