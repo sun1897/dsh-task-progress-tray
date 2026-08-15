@@ -14,7 +14,7 @@ description: "为 DeepSeek Harness (DSH) Web GUI 创建右下角实时悬浮托�
 DSH 的浏览器界面是 cordis 插件体系。一个纯 UI 的客户端插件由三部分组成：
 
 1. **package.json** 里声明 `dsh.client`（`{ platform: "web", inject: [] }`），并 `exports["./client"]` 指向客户端 bundle。
-2. **宿主侧** `lib/index.js`：一个空的 `apply()`。纯浏览器界面的插件，宿主端没有行为，空 apply 只是让它成为一个合法的 Loader 条目。
+2. **宿主侧** `lib/index.js`：注入 `webServer`，启动时抓取 DeepSeek 官网价目并注册同源路由 `/plugins/dsh-task-progress-tray/pricing`，浏览器端由此读取价目（失败则回退内置表）。
 3. **客户端 bundle** `lib/client.js`：用 `window.__ModuleLoader__.load({ id, factory })` 注册。bundle 里 `require('react')` 拿到 React，导出 `apply(ctx)` 和 `inject`（fiber 依赖表）。
 
 **UI 挂载点用 `shell.overlay` 槽**：它是全局 `list` 型 `root` 作用域浮层，覆盖整个窗口、默认点击穿透（pointer-events:none），专门用于放 badge/胶囊/浮窗。注册一个带 `id` 的条目即可叠加，不会覆盖已有元素。你的组件渲染一个 `position:absolute; right:20px; bottom:76px; pointer-events:auto` 的容器，就落在右下角。
@@ -46,7 +46,8 @@ DSH 的浏览器界面是 cordis 插件体系。一个纯 UI 的客户端插件�
 这是最容易算错的部分，先读 `references/deepseek-pricing.md` 再动手。核心规则：
 
 - **必须分桶**：`uncachedInputTokens`（未命中输入）、`cacheReadTokens`（缓存命中，单价约是未命中的 1/30~1/120）、`cacheWriteTokens`、`outputTokens` 各用各的单价。**把缓存命中 token 也按未命中价算会让金额虚高一两个数量级**——这是本技能诞生过程中踩过的真实坑。
-- **峰谷**：高峰时段 = 北京时间 9:00-12:00、14:00-18:00；空闲价 = 高峰价一半。新价有生效日（2026-08-17），生效前用「现价」表，模板里 `PRICE_CHANGE_MS` 自动切换。
+- **峰谷**：高峰时段 = 北京时间 9:00-12:00、14:00-18:00；空闲价 = 高峰价一半。新价有生效日（现为 2026-08-17），生效前用「现价」表，生效后自动切换。
+- **价目不再只靠写死**：宿主端会在启动时 + 每 6 小时从官网中文定价页抓取并解析价目，浏览器端启动时从同源路由 `/plugins/dsh-task-progress-tray/pricing` 读取；抓取失败时回退到 `client.js` 内置的 `MODEL_PRICES` / `PRICE_CHANGE_MS` 兜底。详见 `references/deepseek-pricing.md` 的「自动抓取」。
 - **只有 DeepSeek provider 显示价格**，其他 provider 只显示模型名不显示金额。provider 匹配要宽松（含 "deepseek" 即算，因为不同部署的 provider 路由名不同：`deepseek` / `deepseek-official`）。
 
 ## 安装（无需重启服务器，热加载）
@@ -73,7 +74,8 @@ DSH 的浏览器界面是 cordis 插件体系。一个纯 UI 的客户端插件�
 
 1. **语法**：`node --check lib/client.js`。
 2. **服务端已接入**：`GET http://127.0.0.1:3080/plugins/dsh-task-progress-tray/client.js` 应返回 200 + 你的 bundle 内容（说明 patch 已热应用）。
-3. **真实渲染**（推荐，确定 UI 真的出来）：用无头 Edge 的 CDP 验证。要点——先 `Page.navigate` 加载应用；浏览器会话选择持久化在 `localStorage['dsh.sessions.current']`（形状 `{"sessionId":"..."}`），用 `Runtime.evaluate` 写入后 `location.reload()` 再等待，即可让托盘定位到有数据的会话；再 `document.querySelector('.tt_pill')` 检查胶囊、点击 `document.querySelector('.tt_pill').click()` 展开面板、读 `document.querySelector('.tt_panel').textContent` 核对内容。
+3. **定价路由**：`GET http://127.0.0.1:3080/plugins/dsh-task-progress-tray/pricing` 应返回 200 + JSON（`ok:true`，`models` 里含 `deepseek-v4-pro`）。若 404/503，说明宿主端没跑起来或官网抓取失败——浏览器端会自动回退内置价目，不影响其余功能。
+4. **真实渲染**（推荐，确定 UI 真的出来）：用无头 Edge 的 CDP 验证。要点——先 `Page.navigate` 加载应用；浏览器会话选择持久化在 `localStorage['dsh.sessions.current']`（形状 `{"sessionId":"..."}`），用 `Runtime.evaluate` 写入后 `location.reload()` 再等待，即可让托盘定位到有数据的会话；再 `document.querySelector('.tt_pill')` 检查胶囊、点击 `document.querySelector('.tt_pill').click()` 展开面板、读 `document.querySelector('.tt_panel').textContent` 核对内容。
 
 模板里最关键的几个 selector：`.tt_pill`（折叠胶囊）、`.tt_panel`（展开面板）、`.tt_cost`（花费金额）、`.tt_todo`（单条任务）。
 
@@ -82,7 +84,7 @@ DSH 的浏览器界面是 cordis 插件体系。一个纯 UI 的客户端插件�
 模板 `assets/tray-plugin/` 里：
 
 - **位置**：`client.js` 顶部 CSS 的 `.tt_wrap{...right:20px;bottom:76px...}`——改 `bottom` 即上下移动，避开底部输入框。
-- **价格表**：`client.js` 里的 `MODEL_PRICES` 和 `PRICE_CHANGE_MS`、`CACHE_HIT_RATIO` 比例（当前模板已内联官方数字）。
+- **价格表**：`client.js` 里的 `MODEL_PRICES` / `PRICE_CHANGE_MS` 现在只是**兜底值**；正式价目由宿主端从官网自动抓取（见 `references/deepseek-pricing.md` 的「自动抓取」）。要改抓取源/刷新周期，改 `index.js` 顶部的 `PRICING_URL` / `REFRESH_INTERVAL_MS`。
 - **文案/语言**：组件里的中文字符串（"任务进度"、"暂无进行中的任务"、"本会话已花费"等）。
 - **显示哪几块**：删掉对应 `sections.push(...)` 即可（任务 / 目标 / 后台任务 / 模型花费 / Token 用量）。
 - **始终显示 vs 自动隐藏**：模板默认「始终显示」（空闲显示"空闲"、面板空显示占位）。若想无内容时隐藏，在组件里加 `if (无任何活动) return null`，但记住 `if (slice === null) return null` 这个早退**必须在所有 hooks 之后**，否则 hook 数量在不同分支间变化会报 "Rendered fewer hooks"。

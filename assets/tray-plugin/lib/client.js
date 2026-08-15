@@ -51,31 +51,81 @@ window.__ModuleLoader__.load({
       },
     };
 
+    /** Runtime price source: built-in until the host pricing route supplies fresh data. */
+    var PRICING = {
+      prices: MODEL_PRICES,
+      changeMs: PRICE_CHANGE_MS,
+      source: 'built-in',
+      fetchedAt: null,
+    };
+
     function modelPricing(provider, modelId) {
       if (!isDeepseekProvider(provider)) return null;
-      return MODEL_PRICES[modelId] || null;
+      return PRICING.prices[modelId] || null;
     }
 
-    /** 高峰时段：北京时间 9:00-12:00、14:00-18:00。 */
+    function isTier(t) {
+      return !!(t && typeof t.cacheHit === 'number' && typeof t.cacheMiss === 'number' && typeof t.output === 'number');
+    }
+
+    function prettyModelId(id) {
+      var s = String(id || '');
+      return s.split('-').map(function (part) {
+        return part ? part.charAt(0).toUpperCase() + part.slice(1) : part;
+      }).join('-');
+    }
+
+    /** Apply pricing fetched from the host route; returns true when applied. */
+    function applyFetchedPricing(json) {
+      if (!json || json.ok !== true || !json.models || typeof json.models !== 'object') return false;
+      var models = json.models;
+      var prices = {};
+      var any = false;
+      for (var id in models) {
+        var m = models[id];
+        if (!m || !isTier(m.current) || !isTier(m.peak) || !isTier(m.offpeak)) continue;
+        prices[id] = {
+          name: (MODEL_PRICES[id] && MODEL_PRICES[id].name) || prettyModelId(id),
+          current: { cacheHit: m.current.cacheHit, cacheMiss: m.current.cacheMiss, output: m.current.output },
+          peak: { cacheHit: m.peak.cacheHit, cacheMiss: m.peak.cacheMiss, output: m.peak.output },
+          offpeak: { cacheHit: m.offpeak.cacheHit, cacheMiss: m.offpeak.cacheMiss, output: m.offpeak.output },
+        };
+        any = true;
+      }
+      if (!any) return false;
+      PRICING.prices = prices;
+      if (typeof json.changeMs === 'number' && json.changeMs > 0) PRICING.changeMs = json.changeMs;
+      PRICING.source = typeof json.source === 'string' ? json.source : 'remote';
+      PRICING.fetchedAt = typeof json.fetchedAt === 'number' ? json.fetchedAt : null;
+      return true;
+    }
+
+    /** 高峰时段：北京时间 9:00-12:00、14:00-18:00（UTC+8 固定无夏令时）。 */
     function isPeakHour(date) {
-      var h = date.getHours();
+      var h = date.getUTCHours() + 8; // 北京时间 = UTC+8
+      if (h >= 24) h -= 24;
       return (h >= 9 && h < 12) || (h >= 14 && h < 18);
     }
 
     /** 按当前时间与生效日解析该模型的计费档（现价 / 高峰 / 空闲）。 */
     function currentTier(price, now) {
       if (!price) return null;
-      if (now.getTime() < PRICE_CHANGE_MS) return { cacheHit: price.current.cacheHit, cacheMiss: price.current.cacheMiss, output: price.current.output, period: '现价' };
+      if (now.getTime() < PRICING.changeMs) return { cacheHit: price.current.cacheHit, cacheMiss: price.current.cacheMiss, output: price.current.output, period: '现价' };
       if (isPeakHour(now)) return { cacheHit: price.peak.cacheHit, cacheMiss: price.peak.cacheMiss, output: price.peak.output, period: '高峰' };
       return { cacheHit: price.offpeak.cacheHit, cacheMiss: price.offpeak.cacheMiss, output: price.offpeak.output, period: '空闲' };
     }
 
     function fmtCost(usage, tier) {
       if (!usage || !tier) return null;
-      var c = usage.uncachedInputTokens / 1000000 * tier.cacheMiss
-        + usage.cacheReadTokens / 1000000 * tier.cacheHit
-        + usage.cacheWriteTokens / 1000000 * tier.cacheMiss
-        + usage.outputTokens / 1000000 * tier.output;
+      var u = usage.uncachedInputTokens;
+      var r = usage.cacheReadTokens;
+      var w = usage.cacheWriteTokens;
+      var o = usage.outputTokens;
+      if (!(u >= 0) || !(r >= 0) || !(w >= 0) || !(o >= 0)) return null;
+      var c = u / 1000000 * tier.cacheMiss
+        + r / 1000000 * tier.cacheHit
+        + w / 1000000 * tier.cacheMiss
+        + o / 1000000 * tier.output;
       if (c < 0.01) return '< ¥0.01';
       return '¥' + c.toFixed(2);
     }
@@ -195,6 +245,8 @@ window.__ModuleLoader__.load({
         var modelState = React.useState(null);
         var modelInfo = modelState[0];
         var setModelInfo = modelState[1];
+        var pricingTickState = React.useState(0);
+        var setPricingTick = pricingTickState[1];
 
         React.useEffect(function () {
           return ctx.interval(function () { setNow(Date.now()); }, 1000);
@@ -220,11 +272,25 @@ window.__ModuleLoader__.load({
             var v = res && res.result && res.result.ok ? res.result.value : null;
             var cur = v && v.current ? v.current : null;
             if (!cur) { setModelInfo(null); return; }
-            var p = modelPricing(cur.provider, cur.model);
-            setModelInfo({ provider: cur.provider, model: cur.model, name: (p && p.name) || cur.model, price: p });
+            setModelInfo({ provider: cur.provider, model: cur.model });
           }).catch(function () { if (!cancelled) setModelInfo(null); });
           return function () { cancelled = true; };
         }, [sessionId]);
+
+        // 启动时从宿主定价路由拉取官网价格；失败则继续用内置价目兜底。
+        React.useEffect(function () {
+          var f = typeof window !== 'undefined' ? window.fetch : null;
+          if (typeof f !== 'function') return;
+          var cancelled = false;
+          f('/plugins/dsh-task-progress-tray/pricing', { cache: 'no-store' })
+            .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+            .then(function (json) {
+              if (cancelled) return;
+              if (applyFetchedPricing(json)) setPricingTick(function (t) { return t + 1; });
+            })
+            .catch(function () { /* 保留内置价目 */ });
+          return function () { cancelled = true; };
+        }, []);
 
         if (slice === null) return null;
 
@@ -349,11 +415,12 @@ window.__ModuleLoader__.load({
         }
 
         if (modelInfo) {
-          var tier = currentTier(modelInfo.price, new Date(now));
+          var price = modelPricing(modelInfo.provider, modelInfo.model);
+          var tier = currentTier(price, new Date(now));
           var cost = fmtCost(usage, tier);
           var mRows = [];
           mRows.push(h('div', { className: 'tt_tok_line', key: 'mname' },
-            '当前模型 ', h('b', null, modelInfo.name)));
+            '当前模型 ', h('b', null, (price && price.name) || modelInfo.model)));
           if (cost) {
             mRows.push(h('div', { className: 'tt_tok_line', key: 'mcost' },
               '本会话已花费 ≈ ',
