@@ -86,130 +86,61 @@ function isModelId(text) {
   return /^deepseek-[a-z0-9-]+$/.test(text || '')
 }
 
-/** Return 'cacheHit' | 'cacheMiss' | 'output' for a price row, else null. */
-function priceFieldOf(row) {
-  for (const cell of row) {
-    const t = cell || ''
-    if (t.indexOf('缓存命中') !== -1) return 'cacheHit'
-    if (t.indexOf('未命中') !== -1) return 'cacheMiss'
-    if (t.indexOf('输出') !== -1 && t.indexOf('token') !== -1) return 'output'
-  }
-  return null
-}
-
-/** Parse the "current price" table (model columns × price rows). */
-function parseCurrentTable(grids) {
-  for (const grid of grids) {
-    const header = grid.find(row => row.some(cell => isModelId(cell)))
-    if (!header) continue
-    const modelCols = []
-    header.forEach((cell, i) => { if (isModelId(cell)) modelCols.push(i) })
-    if (modelCols.length === 0) continue
-
-    const result = {}
-    for (const row of grid) {
-      const field = priceFieldOf(row)
-      if (!field) continue
-      for (const col of modelCols) {
-        const id = (header[col] || '').trim()
-        const val = parseNumber(row[col])
-        if (id && val !== null) {
-          result[id] = result[id] || {}
-          result[id][field] = val
-        }
-      }
-    }
-    if (Object.keys(result).length > 0) return result
-  }
-  return null
-}
-
-/** Parse the peak / off-peak pricing table. */
-function parsePeakOffpeakTable(grids) {
-  for (const grid of grids) {
-    let hitCol = -1
-    let missCol = -1
-    let outCol = -1
-    let header = null
-    for (const row of grid) {
-      let h = -1
-      let m = -1
-      let o = -1
-      row.forEach((cell, i) => {
-        const t = cell || ''
-        if (t.indexOf('缓存命中') !== -1) h = i
-        else if (t.indexOf('未命中') !== -1) m = i
-        else if (t.indexOf('输出') !== -1 && t.indexOf('token') !== -1) o = i
-      })
-      if (h !== -1 && m !== -1 && o !== -1) {
-        header = row
-        hitCol = h
-        missCol = m
-        outCol = o
-        break
-      }
-    }
-    if (!header) continue
-
-    const result = {}
-    for (const row of grid) {
-      if (row === header) continue
-      let modelId = null
-      let period = null
-      for (const cell of row) {
-        const t = cell || ''
-        if (isModelId(t)) modelId = t
-        else if (t.indexOf('空闲') !== -1) period = 'offpeak'
-        else if (t.indexOf('高峰') !== -1) period = 'peak'
-      }
-      if (!modelId || !period) continue
-      const cacheHit = parseNumber(row[hitCol])
-      const cacheMiss = parseNumber(row[missCol])
-      const output = parseNumber(row[outCol])
-      if (cacheHit === null || cacheMiss === null || output === null) continue
-      result[modelId] = result[modelId] || {}
-      result[modelId][period] = { cacheHit, cacheMiss, output }
-    }
-    if (Object.keys(result).length > 0) return result
-  }
-  return null
-}
-
-/** Parse the effective date of the peak/off-peak pricing, e.g. "2026 年 8 月 17 日 00:00 开始生效". */
-function parseChangeMs(html) {
-  const m = html.match(/(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*(\d{1,2}):(\d{2})\s*开始生效/)
-  if (!m) return null
-  const pad = n => String(n).padStart(2, '0')
-  return Date.parse(`${m[1]}-${pad(m[2])}-${pad(m[3])}T${pad(m[4])}:${pad(m[5])}:00+08:00`)
-}
-
 function isTier(t) {
   return !!(t && typeof t.cacheHit === 'number' && typeof t.cacheMiss === 'number' && typeof t.output === 'number')
 }
 
+/** Parse the current pricing table: a single combined table with model columns
+ *  and rows grouped by field (缓存命中/未命中/输出) × period (空闲/高峰). */
 function parsePricing(html) {
   const tables = html.match(/<table[\s\S]*?<\/table>/gi) || []
-  const grids = tables.map(tableToGrid)
-  const current = parseCurrentTable(grids)
-  const peakOffpeak = parsePeakOffpeakTable(grids)
-  const changeMs = parseChangeMs(html)
-
-  const ids = new Set([...Object.keys(current || {}), ...Object.keys(peakOffpeak || {})])
   const models = {}
-  for (const id of ids) {
-    const cur = (current && current[id]) || null
-    const po = (peakOffpeak && peakOffpeak[id]) || null
-    if (!isTier(cur) || !po || !isTier(po.peak) || !isTier(po.offpeak)) continue
-    models[id] = {
-      current: { cacheHit: cur.cacheHit, cacheMiss: cur.cacheMiss, output: cur.output },
-      peak: { cacheHit: po.peak.cacheHit, cacheMiss: po.peak.cacheMiss, output: po.peak.output },
-      offpeak: { cacheHit: po.offpeak.cacheHit, cacheMiss: po.offpeak.cacheMiss, output: po.offpeak.output },
+  for (const table of tables) {
+    const grid = tableToGrid(table)
+    let header = null
+    const modelCols = []
+    for (const row of grid) {
+      row.forEach((cell, i) => { if (isModelId(cell)) modelCols.push(i) })
+      if (modelCols.length > 0) { header = row; break }
+    }
+    if (!header) continue
+
+    for (const row of grid) {
+      let field = null
+      let period = null
+      for (const cell of row) {
+        const t = cell || ''
+        if (t.indexOf('缓存命中') !== -1) field = 'cacheHit'
+        else if (t.indexOf('未命中') !== -1) field = 'cacheMiss'
+        else if (t.indexOf('输出') !== -1 && t.indexOf('token') !== -1) field = 'output'
+        if (t.indexOf('空闲') !== -1) period = 'offpeak'
+        else if (t.indexOf('高峰') !== -1) period = 'peak'
+      }
+      if (!field || !period) continue
+      for (const col of modelCols) {
+        const id = (header[col] || '').trim()
+        const val = parseNumber(row[col])
+        if (!id || val === null) continue
+        const model = models[id] || (models[id] = {})
+        const tier = model[period] || (model[period] = {})
+        tier[field] = val
+      }
     }
   }
-  if (Object.keys(models).length === 0) {
+
+  const result = {}
+  for (const id of Object.keys(models)) {
+    const m = models[id]
+    if (!isTier(m.peak) || !isTier(m.offpeak)) continue
+    result[id] = {
+      peak: { cacheHit: m.peak.cacheHit, cacheMiss: m.peak.cacheMiss, output: m.peak.output },
+      offpeak: { cacheHit: m.offpeak.cacheHit, cacheMiss: m.offpeak.cacheMiss, output: m.offpeak.output },
+    }
+  }
+  if (Object.keys(result).length === 0) {
     throw new Error('no models parsed from pricing page')
   }
-  return { models, changeMs }
+  return { models: result }
 }
 
 async function fetchHtml(url) {
@@ -248,7 +179,6 @@ export function apply(ctx) {
           source: PRICING_URL,
           currency: 'CNY',
           fetchedAt: Date.now(),
-          changeMs: parsed.changeMs,
           models: parsed.models,
         }
       } catch (error) {

@@ -27,25 +27,19 @@ window.__ModuleLoader__.load({
       return String(provider).toLowerCase().indexOf('deepseek') !== -1;
     }
 
-    /** 峰谷新价自北京时间 2026-08-17 00:00 起生效。 */
-    var PRICE_CHANGE_MS = Date.parse('2026-08-17T00:00:00+08:00');
-
     /**
      * DeepSeek V4 官方价目（元 / 1M tokens）：
-     *   current —— 现价（2026-08-17 前生效）
-     *   peak / offpeak —— 峰谷新价（高峰 = 北京 9:00-12:00、14:00-18:00）
+     *   peak / offpeak —— 峰谷价（高峰 = 北京 9:00-12:00、14:00-18:00）
      *   cacheHit / cacheMiss / output —— 缓存命中输入 / 缓存未命中输入 / 输出
      */
     var MODEL_PRICES = {
       'deepseek-v4-pro': {
         name: 'DeepSeek-V4-Pro',
-        current: { cacheHit: 0.025, cacheMiss: 3, output: 6 },
         peak: { cacheHit: 0.3, cacheMiss: 9, output: 27 },
         offpeak: { cacheHit: 0.15, cacheMiss: 4.5, output: 13.5 },
       },
       'deepseek-v4-flash': {
         name: 'DeepSeek-V4-Flash',
-        current: { cacheHit: 0.02, cacheMiss: 1, output: 2 },
         peak: { cacheHit: 0.1, cacheMiss: 3, output: 9 },
         offpeak: { cacheHit: 0.05, cacheMiss: 1.5, output: 4.5 },
       },
@@ -54,7 +48,6 @@ window.__ModuleLoader__.load({
     /** Runtime price source: built-in until the host pricing route supplies fresh data. */
     var PRICING = {
       prices: MODEL_PRICES,
-      changeMs: PRICE_CHANGE_MS,
       source: 'built-in',
       fetchedAt: null,
     };
@@ -83,10 +76,9 @@ window.__ModuleLoader__.load({
       var any = false;
       for (var id in models) {
         var m = models[id];
-        if (!m || !isTier(m.current) || !isTier(m.peak) || !isTier(m.offpeak)) continue;
+        if (!m || !isTier(m.peak) || !isTier(m.offpeak)) continue;
         prices[id] = {
           name: (MODEL_PRICES[id] && MODEL_PRICES[id].name) || prettyModelId(id),
-          current: { cacheHit: m.current.cacheHit, cacheMiss: m.current.cacheMiss, output: m.current.output },
           peak: { cacheHit: m.peak.cacheHit, cacheMiss: m.peak.cacheMiss, output: m.peak.output },
           offpeak: { cacheHit: m.offpeak.cacheHit, cacheMiss: m.offpeak.cacheMiss, output: m.offpeak.output },
         };
@@ -94,7 +86,6 @@ window.__ModuleLoader__.load({
       }
       if (!any) return false;
       PRICING.prices = prices;
-      if (typeof json.changeMs === 'number' && json.changeMs > 0) PRICING.changeMs = json.changeMs;
       PRICING.source = typeof json.source === 'string' ? json.source : 'remote';
       PRICING.fetchedAt = typeof json.fetchedAt === 'number' ? json.fetchedAt : null;
       return true;
@@ -107,27 +98,68 @@ window.__ModuleLoader__.load({
       return (h >= 9 && h < 12) || (h >= 14 && h < 18);
     }
 
-    /** 按当前时间与生效日解析该模型的计费档（现价 / 高峰 / 空闲）。 */
+    /** 按当前时间解析该模型的计费档（高峰 / 空闲）。 */
     function currentTier(price, now) {
       if (!price) return null;
-      if (now.getTime() < PRICING.changeMs) return { cacheHit: price.current.cacheHit, cacheMiss: price.current.cacheMiss, output: price.current.output, period: '现价' };
       if (isPeakHour(now)) return { cacheHit: price.peak.cacheHit, cacheMiss: price.peak.cacheMiss, output: price.peak.output, period: '高峰' };
       return { cacheHit: price.offpeak.cacheHit, cacheMiss: price.offpeak.cacheMiss, output: price.offpeak.output, period: '空闲' };
     }
 
-    function fmtCost(usage, tier) {
-      if (!usage || !tier) return null;
-      var u = usage.uncachedInputTokens;
-      var r = usage.cacheReadTokens;
-      var w = usage.cacheWriteTokens;
-      var o = usage.outputTokens;
+    /** Normalize a tokenUsage snapshot into four raw counters (u/r/w/o). */
+    function usageFields(tu) {
+      if (!tu) return null;
+      var u = tu.uncachedInputTokens;
+      var r = tu.cacheReadTokens;
+      var w = tu.cacheWriteTokens;
+      var o = tu.outputTokens;
       if (!(u >= 0) || !(r >= 0) || !(w >= 0) || !(o >= 0)) return null;
-      var c = u / 1000000 * tier.cacheMiss
-        + r / 1000000 * tier.cacheHit
-        + w / 1000000 * tier.cacheMiss
-        + o / 1000000 * tier.output;
+      return { u: u, r: r, w: w, o: o };
+    }
+
+    function zeroFields() {
+      return { u: 0, r: 0, w: 0, o: 0 };
+    }
+
+    function subFields(end, start) {
+      return {
+        u: Math.max(0, end.u - start.u),
+        r: Math.max(0, end.r - start.r),
+        w: Math.max(0, end.w - start.w),
+        o: Math.max(0, end.o - start.o),
+      };
+    }
+
+    function costOfFields(f, tier) {
+      if (!f || !tier) return null;
+      return f.u / 1000000 * tier.cacheMiss
+        + f.r / 1000000 * tier.cacheHit
+        + f.w / 1000000 * tier.cacheMiss
+        + f.o / 1000000 * tier.output;
+    }
+
+    function fmtCostNum(c) {
+      if (c === null || !(c >= 0)) return null;
       if (c < 0.01) return '< ¥0.01';
       return '¥' + c.toFixed(2);
+    }
+
+    /** Sum per-model segment costs so a later model switch never reprices earlier usage. */
+    function totalCost(segs, currentUsage, now) {
+      if (!segs || segs.length === 0) return null;
+      var nowFields = usageFields(currentUsage);
+      var total = 0;
+      var counted = false;
+      for (var i = 0; i < segs.length; i += 1) {
+        var seg = segs[i];
+        var end = i === segs.length - 1 ? nowFields : segs[i + 1].start;
+        if (!end) continue;
+        var tier = currentTier(modelPricing(seg.provider, seg.model), new Date(now));
+        var c = costOfFields(subFields(end, seg.start), tier);
+        if (c === null) continue;
+        total += c;
+        counted = true;
+      }
+      return counted ? total : null;
     }
 
     function sliceEq(a, b) {
@@ -247,6 +279,9 @@ window.__ModuleLoader__.load({
         var setModelInfo = modelState[1];
         var pricingTickState = React.useState(0);
         var setPricingTick = pricingTickState[1];
+        var usageRef = React.useRef(null);
+        var ledgerRef = React.useRef(null);
+        var ledgerSessionRef = React.useRef(null);
 
         React.useEffect(function () {
           return ctx.interval(function () { setNow(Date.now()); }, 1000);
@@ -254,27 +289,78 @@ window.__ModuleLoader__.load({
 
         var sessionId = slice === null ? null : slice[0];
 
+        // 会话切换时清空花费账本，避免旧会话的分段串到新会话。
+        if (ledgerSessionRef.current !== sessionId) {
+          ledgerSessionRef.current = sessionId;
+          ledgerRef.current = null;
+        }
+
+        // 每次渲染后记录最新 token 用量，供模型切换时作为分段边界。
+        React.useEffect(function () {
+          usageRef.current = usageFields(slice === null ? null : slice[6]);
+        });
+
         React.useEffect(function () {
           if (sessionId === null) return;
           if (lastSessionRef.current !== null && lastSessionRef.current !== sessionId) setOpen(false);
           lastSessionRef.current = sessionId;
         }, [sessionId]);
 
-        // 拉取当前会话的模型选择；价格仅对 DeepSeek provider 生效。
+        // 拉取当前会话的模型选择，并订阅模型目录共享 store，模型切换时即时刷新。
         React.useEffect(function () {
           if (sessionId === null) { setModelInfo(null); return; }
           var cancelled = false;
           var conn = ctx.connection;
           var api = conn && conn.api;
-          if (!api || !api.sessions || !api.sessions.models) { setModelInfo(null); return; }
+
+          function applyModel(cur) {
+            if (cancelled || !cur) { if (!cancelled) setModelInfo(null); return; }
+            var next = { provider: cur.provider, model: cur.model };
+            var segs = ledgerRef.current;
+            var last = segs && segs.length > 0 ? segs[segs.length - 1] : null;
+            if (!last || last.provider !== next.provider || last.model !== next.model) {
+              var start = last ? (usageRef.current || zeroFields()) : zeroFields();
+              ledgerRef.current = (segs || []).concat([{ provider: next.provider, model: next.model, start: start }]);
+            }
+            setModelInfo(next);
+          }
+
+          // 模型选择 UI（/model 弹层与输入框座位）共用同一个 ModelDirectory store，
+          // 订阅它即可在用户手动切换模型后即时更新，无需轮询。
+          var stopDir = null;
+          var directories = ctx.get('modelDirectories');
+          if (directories && directories.directoryFor) {
+            try {
+              var directory = directories.directoryFor(sessionId);
+              if (directory && directory.store && directory.store.subscribe) {
+                stopDir = directory.store.subscribe(function () {
+                  var snap = directory.store.getSnapshot();
+                  var cur = snap && snap.current ? snap.current : null;
+                  if (cur) applyModel(cur); // 目录瞬时为空时保留上一次显示
+                });
+              }
+            } catch (e) { /* 拿不到目录则仅用一次性 RPC */ }
+          }
+
+          var cleanup = function () {
+            cancelled = true;
+            if (stopDir) stopDir();
+          };
+
+          if (!api || !api.sessions || !api.sessions.models) {
+            if (!stopDir) setModelInfo(null);
+            return cleanup;
+          }
+
+          // 首次仍走 session.models：无论目录 store 是否已预热，都以宿主为准。
           api.sessions.models({ sessionId: sessionId }).then(function (res) {
             if (cancelled) return;
             var v = res && res.result && res.result.ok ? res.result.value : null;
             var cur = v && v.current ? v.current : null;
-            if (!cur) { setModelInfo(null); return; }
-            setModelInfo({ provider: cur.provider, model: cur.model });
+            applyModel(cur);
           }).catch(function () { if (!cancelled) setModelInfo(null); });
-          return function () { cancelled = true; };
+
+          return cleanup;
         }, [sessionId]);
 
         // 启动时从宿主定价路由拉取官网价格；失败则继续用内置价目兜底。
@@ -417,7 +503,7 @@ window.__ModuleLoader__.load({
         if (modelInfo) {
           var price = modelPricing(modelInfo.provider, modelInfo.model);
           var tier = currentTier(price, new Date(now));
-          var cost = fmtCost(usage, tier);
+          var cost = fmtCostNum(totalCost(ledgerRef.current, usage, now));
           var mRows = [];
           mRows.push(h('div', { className: 'tt_tok_line', key: 'mname' },
             '当前模型 ', h('b', null, (price && price.name) || modelInfo.model)));
