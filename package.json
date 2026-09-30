@@ -2,15 +2,15 @@
   "name": "dsh-task-progress-tray",
   "version": "0.1.0",
   "private": true,
-  "description": "Bottom-right live task-progress tray: todo list, background jobs, goal phase, and token usage for the current session",
+  "description": "Bottom-right live task-progress tray: todo list, background jobs, goal phase, token usage, and DeepSeek peak/off-peak pricing for the current session",
   "type": "module",
-  "main": "lib/index.js",
+  "main": "assets/tray-plugin/lib/index.js",
   "exports": {
     ".": {
-      "default": "./lib/index.js"
+      "default": "./assets/tray-plugin/lib/index.js"
     },
     "./client": {
-      "default": "./lib/client.js"
+      "default": "./assets/tray-plugin/lib/client.js"
     },
     "./package.json": "./package.json",
     "./cordis.patch.yml": "./cordis.patch.yml"

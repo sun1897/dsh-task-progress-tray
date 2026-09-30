@@ -1,0 +1,9 @@
+# dsh-task-progress-tray bundle patch.
+#
+# Registers the host-side half of the tray plugin: it serves the same-origin
+# pricing route (/plugins/dsh-task-progress-tray/pricing) that the browser
+# tray reads. The browser UI itself is loaded through the `dsh.client`
+# declaration in package.json, not through this patch.
+- insert:
+    - id: task-progress-tray
+      name: dsh-task-progress-tray

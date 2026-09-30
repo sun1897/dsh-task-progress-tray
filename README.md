@@ -30,10 +30,13 @@
 
 ```
 dsh-task-progress-tray/
+├── package.json                    # 插件包 manifest（同时声明 dsh.client + dsh.bundle.patch）
+├── cordis.patch.yml                # 组合包 patch（注册宿主端 pricing 路由）
 ├── SKILL.md                        # 技能主文档（方法论 + 安装 + 验证 + 常见坑）
 ├── assets/
-│   └── tray-plugin/                # 已验证的完整插件模板
+│   └── tray-plugin/                # 已验证的完整插件模板（与根目录 manifest 保持一致）
 │       ├── package.json
+│       ├── cordis.patch.yml
 │       └── lib/
 │           ├── index.js            # 宿主端（抓取官网价目 + 提供同源定价路由）
 │           └── client.js           # 浏览器端 bundle（UI + 数据订阅 + 计价）
@@ -42,7 +45,18 @@ dsh-task-progress-tray/
     └── deepseek-pricing.md         # DeepSeek V4 官方价目 + 峰谷规则 + 分桶计价
 ```
 
-## 安装技能
+## 安装
+
+这个仓库**既是 Agent Skill，也是一个可直接安装进 DSH 的插件包**。根目录 `package.json` 同时声明了 `dsh.client`（浏览器端 UI）和 `dsh.bundle.patch`（桌面端组合包），所以 web 端和桌面端都能用。
+
+### 方式一：作为插件包安装（web 端 + 桌面端都兼容）
+
+1. 桌面端「插件管理」里安装仓库地址 `https://github.com/sun1897/dsh-task-progress-tray`（或 `github:sun1897/dsh-task-progress-tray`）。安装后它会作为**组合包**自动启用：`cordis.patch.yml` 注册宿主端定价路由，`dsh.client` 让浏览器加载托盘 UI。
+2. web 端刷新一次页面即可看到右下角托盘。
+
+> 根目录 `package.json` 的 `main`/`exports` 直接指向 `assets/tray-plugin/lib/`，所以按 git 仓库安装即可，无需改动目录结构。
+
+### 方式二：作为 Agent Skill 安装
 
 1. 把这个目录（或打包后的 `.skill` 文件）放到你的 skill 目录（如 `~/.agents/skills/`）
 2. 之后对 agent 说「右下角显示任务进度 / token 用量 / 模型花费」即可触发

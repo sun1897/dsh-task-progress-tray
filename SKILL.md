@@ -50,7 +50,16 @@ DSH 的浏览器界面是 cordis 插件体系。一个纯 UI 的客户端插件�
 - **价目不再只靠写死**：宿主端会在启动时 + 每 6 小时从官网中文定价页抓取并解析价目，浏览器端启动时从同源路由 `/plugins/dsh-task-progress-tray/pricing` 读取；抓取失败时回退到 `client.js` 内置的 `MODEL_PRICES` / `PRICE_CHANGE_MS` 兜底。详见 `references/deepseek-pricing.md` 的「自动抓取」。
 - **只有 DeepSeek provider 显示价格**，其他 provider 只显示模型名不显示金额。provider 匹配要宽松（含 "deepseek" 即算，因为不同部署的 provider 路由名不同：`deepseek` / `deepseek-official`）。
 
-## 安装（无需重启服务器，热加载）
+## 安装
+
+本技能产出的插件包在根目录 `package.json` 同时声明了 `dsh.client`（浏览器端 UI）与 `dsh.bundle.patch`（桌面端组合包），因此既可作为组合包通过「插件管理」安装，也可手动复制。
+
+### 方式一：插件管理安装（推荐，web 端 + 桌面端都兼容）
+
+1. 在 DSH 桌面端「插件管理」里安装仓库地址 `https://github.com/sun1897/dsh-task-progress-tray`（或 `github:sun1897/dsh-task-progress-tray`）。它会作为组合包自动启用：根目录 `cordis.patch.yml` 注册宿主端定价路由，`dsh.client` 让浏览器加载托盘 UI。
+2. 浏览器刷新一次页面即可看到右下角托盘。
+
+### 方式二：手动复制（无需重启服务器，热加载）
 
 目标环境：`$DSH_HOME/profiles/web`（`$DSH_HOME` 默认 `~/.dsh`）。
 
