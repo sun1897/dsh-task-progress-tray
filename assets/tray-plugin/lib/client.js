@@ -173,21 +173,28 @@ window.__ModuleLoader__.load({
 
     /** Select the current session's live progress facts (stable references → cheap equality). */
     function selectSlice(state) {
-      var id = state.current;
-      if (id === undefined) return null;
-      var row = state.byId[id];
+      var byId = state.byId;
+      var id = null;
+      // v0.2.0 的会话列表 store 没有 state.current；当前会话 = 主视图保留的那个会话。
+      for (var k in byId) {
+        var s = byId[k];
+        if (s && s.retainedBy && (s.retainedBy.mainView || 0) > 0) { id = s.id; break; }
+      }
+      if (id === null) return null;
+      var row = byId[id];
       if (row === undefined) return null;
       var pv = row.projectionValues;
       return [
         id,
         (pv && pv.todos) || NO_TODOS,
         (pv && pv.goal) || null,
-        state.jobsBySession[id] || NO_JOBS,
+        NO_JOBS,
         row.running === true,
         row.displayTitle || '',
         (pv && pv.tokenUsage) || null,
         (pv && pv.contextPressure) || null,
         (pv && pv.contextBreakdown) || null,
+        (pv && pv.modelSelection) || null,
       ];
     }
 
@@ -284,7 +291,8 @@ window.__ModuleLoader__.load({
         var ledgerSessionRef = React.useRef(null);
 
         React.useEffect(function () {
-          return ctx.interval(function () { setNow(Date.now()); }, 1000);
+          var t = setInterval(function () { setNow(Date.now()); }, 1000);
+          return function () { clearInterval(t); };
         }, []);
 
         var sessionId = slice === null ? null : slice[0];
@@ -306,62 +314,21 @@ window.__ModuleLoader__.load({
           lastSessionRef.current = sessionId;
         }, [sessionId]);
 
-        // 拉取当前会话的模型选择，并订阅模型目录共享 store，模型切换时即时刷新。
+        // 当前会话的模型选择来自 modelSelection 投影（next = {provider, model}）。
+        // 模型切换时记录分段，保证之后按各自单价计价。
         React.useEffect(function () {
           if (sessionId === null) { setModelInfo(null); return; }
-          var cancelled = false;
-          var conn = ctx.connection;
-          var api = conn && conn.api;
-
-          function applyModel(cur) {
-            if (cancelled || !cur) { if (!cancelled) setModelInfo(null); return; }
-            var next = { provider: cur.provider, model: cur.model };
-            var segs = ledgerRef.current;
-            var last = segs && segs.length > 0 ? segs[segs.length - 1] : null;
-            if (!last || last.provider !== next.provider || last.model !== next.model) {
-              var start = last ? (usageRef.current || zeroFields()) : zeroFields();
-              ledgerRef.current = (segs || []).concat([{ provider: next.provider, model: next.model, start: start }]);
-            }
-            setModelInfo(next);
+          var sel = slice === null ? null : slice[9];
+          var next = sel && sel.next ? { provider: sel.next.provider, model: sel.next.model } : null;
+          if (!next) { setModelInfo(null); return; }
+          var segs = ledgerRef.current;
+          var last = segs && segs.length > 0 ? segs[segs.length - 1] : null;
+          if (!last || last.provider !== next.provider || last.model !== next.model) {
+            var start = last ? (usageRef.current || zeroFields()) : zeroFields();
+            ledgerRef.current = (segs || []).concat([{ provider: next.provider, model: next.model, start: start }]);
           }
-
-          // 模型选择 UI（/model 弹层与输入框座位）共用同一个 ModelDirectory store，
-          // 订阅它即可在用户手动切换模型后即时更新，无需轮询。
-          var stopDir = null;
-          var directories = ctx.get('modelDirectories');
-          if (directories && directories.directoryFor) {
-            try {
-              var directory = directories.directoryFor(sessionId);
-              if (directory && directory.store && directory.store.subscribe) {
-                stopDir = directory.store.subscribe(function () {
-                  var snap = directory.store.getSnapshot();
-                  var cur = snap && snap.current ? snap.current : null;
-                  if (cur) applyModel(cur); // 目录瞬时为空时保留上一次显示
-                });
-              }
-            } catch (e) { /* 拿不到目录则仅用一次性 RPC */ }
-          }
-
-          var cleanup = function () {
-            cancelled = true;
-            if (stopDir) stopDir();
-          };
-
-          if (!api || !api.sessions || !api.sessions.models) {
-            if (!stopDir) setModelInfo(null);
-            return cleanup;
-          }
-
-          // 首次仍走 session.models：无论目录 store 是否已预热，都以宿主为准。
-          api.sessions.models({ sessionId: sessionId }).then(function (res) {
-            if (cancelled) return;
-            var v = res && res.result && res.result.ok ? res.result.value : null;
-            var cur = v && v.current ? v.current : null;
-            applyModel(cur);
-          }).catch(function () { if (!cancelled) setModelInfo(null); });
-
-          return cleanup;
-        }, [sessionId]);
+          setModelInfo(next);
+        }, [sessionId, slice]);
 
         // 启动时从宿主定价路由拉取官网价格；失败则继续用内置价目兜底。
         React.useEffect(function () {
@@ -573,7 +540,7 @@ window.__ModuleLoader__.load({
     }
 
     exports.apply = apply;
-    exports.inject = ['slots', 'timer', 'connection'];
+    exports.inject = ['slots'];
     return module.exports;
   },
 });
